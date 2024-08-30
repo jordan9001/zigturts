@@ -11,6 +11,10 @@ const RndGen = std.rand.DefaultPrng;
 
 const MAXPROG: u16 = 0x480;
 
+// type aliases
+const idint = u64;
+const color_t = u4;
+
 var gpa = std.heap.GeneralPurposeAllocator(.{
     .thread_safe = true,
 }){};
@@ -22,7 +26,7 @@ const Turtle = struct {
     //TODO could use rwlock instead?
     mux: std.Thread.Mutex = .{},
 
-    prog: [MAXPROG]u8 = "",
+    prog: [MAXPROG]u8 = .{0} ** MAXPROG,
     progsz: u16 = 0,
 
     cursor: u16 = 0,
@@ -30,13 +34,13 @@ const Turtle = struct {
     wait: u16 = 0,
     x: u16 = 0,
     y: u16 = 0,
-    color: u8 = 0,
+    color: color_t = 0,
 };
 
 /// A User has a unique id, a turtle, and a websocket context
 const UserContext = struct {
     /// unique id used to log in
-    id: u128,
+    id: idint,
 
     turtle: Turtle,
 
@@ -56,7 +60,7 @@ const Floor = struct {
     // and chunk updates are the only other reader
     h: u16,
     w: u16,
-    img: []u8,
+    img: []color_t,
     mux: std.Thread.Mutex = .{},
 };
 
@@ -70,16 +74,24 @@ const GameContext = struct {
 
     fn init(usernum: u16, w: u16, h: u16) !Self {
         const users_s = try alloc.alloc(UserContext, usernum);
-        const img_s = try alloc.alloc(u8, w * h);
-        @memset(img_s, 0xff);
+
+        if (w % 2 == 1) {
+            @panic("Width must be multiple of two!");
+        }
+
+        const img_s = try alloc.alloc(color_t, w * h);
+        @memset(img_s, 0);
 
         for (users_s) |*user| {
-            user.id = std.crypto.random.int(u128);
+            //TODO actually read these in, don't remake them every time
+            user.id = std.crypto.random.int(idint);
+            std.debug.print("User: {}\n", .{user.id});
             {
                 user.mux.lock();
                 defer user.mux.unlock();
 
                 user.wsh = null;
+                user.turtle = Turtle{};
                 user.wss = WebsocketHandler.WebSocketSettings{
                     .on_message = ws_on_msg,
                     .on_open = ws_on_open,
@@ -140,8 +152,6 @@ fn ws_on_close(userctx: ?*UserContext, uuid: isize) void {
 
         user.wsh = null;
     }
-
-    std.debug.print("Closing wshandle for user {}\n", .{user.id});
 }
 
 const MsgType = enum(u8) {
@@ -160,20 +170,48 @@ fn send_floor(handle: WebSockets.WsHandle) void {
         floor.mux.lock();
         defer floor.mux.unlock();
 
-        const floor_out: []u8 = alloc.alloc(u8, floor.img.len + 4) catch unreachable;
-	defer alloc.free(floor_out);
+        const floor_out: []u8 = alloc.alloc(u8, (floor.img.len / 2) + 2 + 2 + 1) catch unreachable;
+        defer alloc.free(floor_out);
 
-        floor_out[0] = @intCast(floor.w & 0xff);
-        floor_out[1] = @intCast((floor.w >> 8) & 0xff);
-        floor_out[2] = @intCast(floor.h & 0xff);
-        floor_out[3] = @intCast((floor.h >> 8) & 0xff);
-        @memcpy(floor_out[4..], floor.img);
+        floor_out[0] = @intFromEnum(MsgType.pushfloor);
+        floor_out[1] = @intCast(floor.w & 0xff);
+        floor_out[2] = @intCast((floor.w >> 8) & 0xff);
+        floor_out[3] = @intCast(floor.h & 0xff);
+        floor_out[4] = @intCast((floor.h >> 8) & 0xff);
+
+        //@memcpy(floor_out[5..], floor.img);
+        for (0..(floor.img.len / 2)) |bi| {
+            // copy over two at a time
+            floor_out[bi + 5] = floor.img[bi*2];
+            floor_out[bi + 5] |= @as(u8, floor.img[(bi*2) + 1]) << 4;
+        }
 
         WebsocketHandler.write(handle, floor_out, false) catch |err| {
             std.debug.print("Unable to write out floor: {}\n", .{err});    
         };
     }
 
+}
+
+fn send_prog(handle: WebSockets.WsHandle, turt: *Turtle) void {
+    // lock the prog
+    turt.mux.lock();
+    defer turt.mux.unlock();
+
+    // write out the existing program
+    const prog_out: []u8 = alloc.alloc(u8, turt.progsz + 1) catch unreachable;
+    defer alloc.free(prog_out);
+
+    std.debug.print("progsz {} outsz {}?\n", .{turt.progsz, prog_out.len});
+
+    prog_out[0] = @intFromEnum(MsgType.pushprog);
+    if (prog_out.len > 1) {
+        @memcpy(prog_out[1..prog_out.len], turt.prog[0..turt.progsz]);
+    }
+
+    WebsocketHandler.write(handle, prog_out, false) catch |err| {
+        std.debug.print("Unable to write out existing program: {}\n", .{err});    
+    };
 }
 
 fn ws_on_msg(
@@ -191,7 +229,7 @@ fn ws_on_msg(
         return;
     }
 
-    std.debug.print("User {} send a msg {}\n", .{user.id, msg[0]});
+    std.debug.print("User {} sent a msg {}\n", .{user.id, msg[0]});
 
     const msgtype: MsgType = @enumFromInt(msg[0]);
     switch (msgtype) {
@@ -199,14 +237,7 @@ fn ws_on_msg(
             send_floor(handle);
         },
         .getprog => {
-            // lock the prog
-            user.turtle.mux.lock();
-            defer user.turtle.mux.unlock();
-
-            // write out the existing program
-            WebsocketHandler.write(handle, user.turtle.prog[0..user.turtle.progsz], false) catch |err| {
-                std.debug.print("Unable to write out existing program: {}\n", .{err});    
-            };
+            send_prog(handle, &user.turtle);
         },
         .pushprog => {
             // got a prog for this user's turtle
@@ -254,7 +285,37 @@ fn on_upgrade(r: zap.Request, target_protocol: []const u8) void {
         return;
     }
 
-    //TODO get path as key, check key for user in db
+    std.debug.print("Got upgrade for {?s}\n", .{r.path});
+
+    if (r.path) |path| {
+        const strid = path[("/ws/".len)..];
+        const id: idint = std.fmt.parseInt(idint, strid, 10) catch {
+            std.debug.print("Bad id {s}\n", .{strid});
+            return;
+        };
+
+        // check key for user in db
+        // users list and ids are static at this point, no need for a lock
+        for (g_gamectx.users) |*u| {
+            if (id == u.id) {
+                std.debug.print("Found user!", .{});
+                
+                // do upgrade!
+                WebsocketHandler.upgrade(r.h, &u.wss) catch |err| {
+                    std.debug.print("Error in websocketUpgrade(): {any}", .{err});
+                    return;
+                };
+
+                break;
+            }
+        } else {
+            std.debug.print("Did not find matching user for {}\n", .{id});
+            return;
+        }
+
+    } else {
+        return;
+    }
 
 }
 
@@ -271,8 +332,6 @@ pub fn main() !void {
     var argi = std.process.args();
     var i: u16 = 0;
     while (argi.next()) |a| : (i+=1) {
-        std.debug.print("Arg {}: {s}\n", .{i, a});
-
         switch (i) {
             0 => {prog = a;},
             1 => {usernum = std.fmt.parseInt(u16, a, 0) catch 0;},
@@ -298,7 +357,7 @@ pub fn main() !void {
     // setup listener
     var listener = zap.HttpListener.init(
         .{
-            .port = 3010,
+            .port = 3000,
             .on_request = on_request,
             .on_upgrade = on_upgrade,
             .max_clients = 1000,

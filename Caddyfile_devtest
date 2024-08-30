@@ -1,0 +1,15 @@
+
+{
+	http_port 8007
+	https_port 8008
+	admin off
+	debug
+}
+
+192.168.0.112:8008 {
+	bind 0.0.0.0
+	tls internal
+	root * ./site
+	reverse_proxy /ws/* localhost:3000
+	file_server
+}
