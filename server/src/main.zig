@@ -110,6 +110,14 @@ fn ws_on_open(userctx: ?*UserContext, handle: WebSockets.WsHandle) void {
         user.mux.lock();
         defer user.mux.unlock();
 
+        // what if there is an existing connection? Can we trash that one?
+        if (user.wsh) |oldhandle| {
+            WebsocketHandler.close(oldhandle);
+            // will this call on_close? I don't want that
+            // hmmm, try and see I guess?
+            std.debug.print("Got a new connection with an existing connection already here... closed old one, see if new one sticks around?\n    old {?} new {?}", .{oldhandle, handle});
+        }
+
         user.wsh = handle;
     }
 
@@ -125,6 +133,10 @@ fn ws_on_close(userctx: ?*UserContext, uuid: isize) void {
     {
         user.mux.lock();
         defer user.mux.unlock();
+
+        if (user.wsh) |oldhandle| {
+            std.debug.print("Closing wshandle for user {}: {?}\n", .{user.id, oldhandle});
+        }
 
         user.wsh = null;
     }
@@ -149,6 +161,7 @@ fn send_floor(handle: WebSockets.WsHandle) void {
         defer floor.mux.unlock();
 
         const floor_out: []u8 = alloc.alloc(u8, floor.img.len + 4) catch unreachable;
+	defer alloc.free(floor_out);
 
         floor_out[0] = @intCast(floor.w & 0xff);
         floor_out[1] = @intCast((floor.w >> 8) & 0xff);
@@ -159,7 +172,6 @@ fn send_floor(handle: WebSockets.WsHandle) void {
         WebsocketHandler.write(handle, floor_out, false) catch |err| {
             std.debug.print("Unable to write out floor: {}\n", .{err});    
         };
-
     }
 
 }
@@ -298,6 +310,10 @@ pub fn main() !void {
     std.debug.print("Listening on 0.0.0.0:3000\n", .{});
 
     // start our own thread for evaluating the instructions
+    // evaluator thread does:
+    // - runs instructions
+    // - writes out updates
+    // - pauses if no clients are connected
     //TODO
 
     // start worker threads
