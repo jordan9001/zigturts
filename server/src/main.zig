@@ -191,6 +191,8 @@ fn ws_on_msg(
         return;
     }
 
+    std.debug.print("User {} send a msg {}\n", .{user.id, msg[0]});
+
     const msgtype: MsgType = @enumFromInt(msg[0]);
     switch (msgtype) {
         .getfloor => {
