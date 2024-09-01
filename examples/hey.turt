@@ -1,3 +1,7 @@
+set_ang 21
+
+start_loop 2
+
 now_turn_l 6
 set_fwd 6
 set_turn_r 0
@@ -61,6 +65,8 @@ wait_26 1
 wait 6
 set_turn_l 0
 wait 9
+
+do_loop 0
 
 
 

@@ -593,6 +593,9 @@ fn evaluator(stopptr: *bool) void {
                             if (turt.loop_count[targ] != 0) {
                                 turt.loop_count[targ] -= 1;
                                 turt.cursor = turt.loop_pos[targ];
+                            } else if (turt.loop_head > 0) {
+                                // pop this loop from the stack
+                                turt.loop_head -= 1;
                             }
 
                             // force wait a tick if using this inst
