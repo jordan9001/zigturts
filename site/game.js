@@ -37,8 +37,25 @@ document.addEventListener('DOMContentLoaded', () => {
     let dv = new DataView(data);
     // get message type
     let mt = dv.getUint8(0, true);
-    console.log("Got message type " + mt);
-    console.log("dbg: ", dv);
+    let uarr = new Uint8Array(dv.buffer.Uint8Array.slice(1));
+    console.log("Got message type " + mt, uarr);
+
+    switch (mt) {
+      case 3:
+        // program
+        //TODO
+        break;
+      case 4:
+        // floor
+        //TODO
+        break;
+      case 5:
+        // update
+        //TODO
+        break;
+      default:
+        console.log("Unknown message type");
+    }
   }
 
   btn.addEventListener("click", (evt) => {

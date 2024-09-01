@@ -405,9 +405,7 @@ const TurtOp = enum(u8) {
 /// - writes out updates
 /// - pauses if no clients are connected
 fn evaluator(stopptr: *bool) void {
-    //DEBUG
     {
-        std.debug.print("{}\n", .{@sizeOf(PixelUpdate)});
         std.debug.assert(@sizeOf(PixelUpdate) == 5);
     }
 
