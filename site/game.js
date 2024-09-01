@@ -49,7 +49,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // filter for their benefit
       // lowercase everything and remove everything except a-z
       prog = prog.toLowerCase();
-      prog = prog.replace(/[^a-z ]/g, '');
+      prog = prog.replace(/[^a-z]/g, '');
       txt.value = prog;
 
       prog = "\x03" + prog;
