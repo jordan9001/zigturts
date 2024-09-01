@@ -462,7 +462,7 @@ fn evaluator(stopptr: *bool) void {
                 }
             }
 
-            if (active_progs) {
+            if (active_progs and active_users) {
                 break;
             }
         }
