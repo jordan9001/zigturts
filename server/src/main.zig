@@ -38,7 +38,7 @@ const Turtle = struct {
     x: f32 = 0.0,
     y: f32 = 0.0,
     color: color_t = 0,
-    thick: u8 = 1,
+    thick: u8 = 3,
     wait: u16 = 0,
     loop_pos: [MAXLOOP]u16 = .{0} ** MAXLOOP,
     loop_count: [MAXLOOP]u8 = .{0} ** MAXLOOP,
@@ -47,10 +47,7 @@ const Turtle = struct {
     fn reset(self: *Turtle, full: bool) void {
         // lock must already be owned by this thread
         self.cursor = 0;
-        self.spd = 0.0;
         self.rotspd = 0.0;
-        self.rot = 0.0;
-        self.thick = 1;
         self.wait = 0;
         self.loop_head = 0;
 
@@ -58,6 +55,9 @@ const Turtle = struct {
             self.x = 0.0;
             self.y = 0.0;
             self.color = 0xf;
+            self.rot = 0.0;
+            self.spd = 0.0;
+            self.thick = 1;
         }
     }
 };
@@ -180,10 +180,10 @@ fn ws_on_open(userctx: ?*UserContext, handle: WebSockets.WsHandle) void {
 
         // what if there is an existing connection? Can we trash that one?
         if (user.wsh) |oldhandle| {
-            WebsocketHandler.close(oldhandle);
             // will this call on_close? I don't want that
             // ignore the close
             user.ignore_close = true;
+            WebsocketHandler.close(oldhandle);
             // std.debug.print("Got a new connection with an existing connection already here... closed old one, see if new one sticks around?\n    old {?} new {?}", .{ oldhandle, handle });
         }
 
@@ -263,8 +263,6 @@ fn send_prog(handle: WebSockets.WsHandle, turt: *Turtle) void {
     // write out the existing program
     const prog_out: []u8 = alloc.alloc(u8, turt.progsz + 1) catch unreachable;
     defer alloc.free(prog_out);
-
-    std.debug.print("progsz {} outsz {}?\n", .{ turt.progsz, prog_out.len });
 
     prog_out[0] = @intFromEnum(MsgType.pushprog);
     if (prog_out.len > 1) {
@@ -433,6 +431,8 @@ fn evaluator(stopptr: *bool) void {
         std.debug.assert(@sizeOf(PixelUpdate) == 5);
     }
 
+    var was_active_users: bool = false;
+    var was_active_progs: bool = false;
     loop: while (true) {
         const stop = @atomicLoad(bool, stopptr, std.builtin.AtomicOrder.unordered);
         if (stop) {
@@ -467,6 +467,11 @@ fn evaluator(stopptr: *bool) void {
             }
         }
 
+        if (active_users != was_active_users or active_progs != was_active_progs) {
+            was_active_progs = active_progs;
+            was_active_users = active_users;
+            std.debug.print("activity: {} {}\n", .{ active_users, active_progs });
+        }
         if (!active_users or !active_progs) {
             std.time.sleep(idle_sleep_time);
             continue :loop;
@@ -504,7 +509,7 @@ fn evaluator(stopptr: *bool) void {
                     }
 
                     const op: TurtOp = @enumFromInt(turt.prog[turt.cursor] - 'a');
-                    const imm = (turt.prog[turt.cursor + 1] - 'a');
+                    const imm: u8 = (turt.prog[turt.cursor + 1] - 'a');
 
                     turt.cursor += 2;
 
@@ -597,7 +602,7 @@ fn evaluator(stopptr: *bool) void {
                             break :inst_loop;
                         },
                         .wait_x26 => {
-                            turt.wait = imm * 26;
+                            turt.wait = @as(u16, imm) * 26;
                             break :inst_loop;
                         },
                         _ => {
