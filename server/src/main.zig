@@ -33,10 +33,10 @@ const Turtle = struct {
     spd: f32 = 0.0,
     rotspd: f32 = 0.0,
     rot: f32 = 0.0,
-    x: i32 = 0,
-    y: i32 = 0,
+    x: f32 = 0.0,
+    y: f32 = 0.0,
     color: color_t = 0,
-    thick: u8 = 0,
+    thick: u8 = 1,
     wait: u16 = 0,
     loop_pos: [MAXLOOP]u16 = .{0} ** MAXLOOP,
     loop_count: [MAXLOOP]u8 = .{0} ** MAXLOOP,
@@ -125,8 +125,8 @@ const GameContext = struct {
 
                 user.wsh = null;
                 user.turtle = Turtle{
-                    .x = std.crypto.random.int(u16) % w,
-                    .y = std.crypto.random.int(u16) % h,
+                    .x = std.crypto.random.float(f32) * @as(f32, @floatFromInt(w)),
+                    .y = std.crypto.random.float(f32) * @as(f32, @floatFromInt(h)),
                     .color = 0x0,
                 };
                 user.wss = WebsocketHandler.WebSocketSettings{
@@ -366,7 +366,7 @@ const no_prog_sleep_time = 12e8; // 1.5 sec
 const tick_time_ns = 2e8; // tick every .2 seconds
 const tick_time_sec: f32 = tick_time_ns / 1e9;
 
-const speed_mult: u16 = 2;
+const speed_mult: f32 = 1;
 const turn_step: f32 = std.math.degreesToRadians(90.0 / 24.0);
 const turn_step_rate: f32 = turn_step * tick_time_sec;
 const set_ang_step: f32 = std.math.degreesToRadians(360.0 / 24.0);
@@ -418,6 +418,11 @@ fn evaluator() void {
             std.time.sleep(idle_sleep_time);
             continue :loop;
         }
+
+        // max update of pixels is max thickness with each
+        const maxupdate = g_gamectx.users.len * 26 * 26;
+        const updatebuf: []u8 = alloc.alloc(u8, maxupdate) catch unreachable;
+        defer alloc.free(updatebuf);
 
         var active_progs = false;
         for (g_gamectx.users) |*user| {
@@ -488,7 +493,9 @@ fn evaluator() void {
                             g_gamectx.floor.mux.lock();
                             defer g_gamectx.floor.mux.unlock();
 
-                            const undercolor = g_gamectx.floor.img[g_gamectx.floor.pos2idx(turt.x, turt.y)];
+                            const undercolor = g_gamectx.floor.img[
+                                g_gamectx.floor.pos2idx(@intFromFloat(turt.x), @intFromFloat(turt.y))
+                            ];
 
                             turt.color = undercolor;
                         },
@@ -543,30 +550,18 @@ fn evaluator() void {
                 g_gamectx.floor.mux.lock();
                 defer g_gamectx.floor.mux.unlock();
 
-                const thk: usize = turt.thick;
-                for (0..(thk + 1)) |dy| {
-                    const ty = @as(i32, turt.y) - @as(i32, @intCast(dy));
-                    for (0..(thk + 1)) |dx| {
-                        const tx = @as(i32, turt.x) - @as(i32, @intCast(dx));
+                const thk: i32 = turt.thick;
+                var dy = -thk;
+                while (dy <= thk) : (dy += 1) {
+                    const ty = @as(i32, @intFromFloat(turt.y)) - @as(i32, @intCast(dy));
+                    var dx = -thk;
+                    while (dx <= thk) : (dx += 1) {
+                        const tx = @as(i32, @intFromFloat(turt.x)) - @as(i32, @intCast(dx));
                         g_gamectx.floor.img[g_gamectx.floor.pos2idx(tx, ty)] = turt.color;
 
-                        if (dx != 0) {
-                            const txn = @as(i32, turt.x) + @as(i32, @intCast(dx));
-                            g_gamectx.floor.img[g_gamectx.floor.pos2idx(txn, ty)] = turt.color;
-                        }
-                    }
+                        //TODO add update if pixel changed
+                        //TODO don't do if pixel already updated this tick?
 
-                    if (dy != 0) {
-                        const tyn = @as(i32, turt.y) + @as(i32, @intCast(dy));
-                        for (0..(thk + 1)) |dx| {
-                            const tx = @as(i32, turt.x) - @as(i32, @intCast(dx));
-                            g_gamectx.floor.img[g_gamectx.floor.pos2idx(tx, tyn)] = turt.color;
-
-                            if (dx != 0) {
-                                const txn = @as(i32, turt.x) + @as(i32, @intCast(dx));
-                                g_gamectx.floor.img[g_gamectx.floor.pos2idx(txn, tyn)] = turt.color;
-                            }
-                        }
                     }
                 }
             }
@@ -580,14 +575,25 @@ fn evaluator() void {
                 turt.rot += std.math.tau;
             }
 
-            const fltx: f32 = @floatFromInt(turt.x);
-            const flty: f32 = @floatFromInt(turt.y);
-            const nxtx: i32 = @intFromFloat(fltx + (@cos(turt.rot) * turt.spd));
-            const nxty: i32 = @intFromFloat(flty + (@sin(turt.rot) * turt.spd));
+            const fw: f32 = @floatFromInt(g_gamectx.floor.w);
+            var nxtx: f32 = turt.x + (@cos(turt.rot) * turt.spd);
+            while (nxtx >= fw) {
+                nxtx -= fw;
+            }
+            while (nxtx < 0.0) {
+                nxtx += fw;
+            }
+            turt.x = nxtx;
 
-            const npos = g_gamectx.floor.wrappos(nxtx, nxty);
-            turt.x = npos[0];
-            turt.y = npos[1];
+            const fh: f32 = @floatFromInt(g_gamectx.floor.h);
+            var nxty: f32 = turt.y + (@sin(turt.rot) * turt.spd);
+            while (nxty >= fh) {
+                nxty -= fh;
+            }
+            while (nxty < 0.0) {
+                nxty += fw;
+            }
+            turt.y = nxty;
         }
 
         if (!active_progs) {
@@ -596,10 +602,9 @@ fn evaluator() void {
         }
 
         // sent out updates
-        // wait the min number of ticks
-        // or a few seconds if there are no connected users
         //TODO
 
+        // tick
         std.time.sleep(tick_time_ns);
         // loop
     }
