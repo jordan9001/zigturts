@@ -371,6 +371,12 @@ const turn_step: f32 = std.math.degreesToRadians(90.0 / 24.0);
 const turn_step_rate: f32 = turn_step * tick_time_sec;
 const set_ang_step: f32 = std.math.degreesToRadians(360.0 / 24.0);
 
+const PixelUpdate = packed struct {
+    x: u16,
+    y: u16,
+    color: u8,
+};
+
 const TurtOp = enum(u8) {
     set_fwd = 0,
     add_fwd = 1,
@@ -421,8 +427,13 @@ fn evaluator() void {
 
         // max update of pixels is max thickness with each
         const maxupdate = g_gamectx.users.len * 26 * 26;
-        const updatebuf: []u8 = alloc.alloc(u8, maxupdate) catch unreachable;
+        var numupdate: usize = 0;
+        const bytesize = 1 + (maxupdate * @sizeOf(PixelUpdate));
+        const updatebuf: []u8 = alloc.alloc(u8, bytesize) catch unreachable;
         defer alloc.free(updatebuf);
+        updatebuf[0] = @intFromEnum(MsgType.pushupd);
+
+        const updateitems: [*]PixelUpdate = @ptrCast(@alignCast(&updatebuf[1]));
 
         var active_progs = false;
         for (g_gamectx.users) |*user| {
@@ -552,16 +563,30 @@ fn evaluator() void {
 
                 const thk: i32 = turt.thick;
                 var dy = -thk;
-                while (dy <= thk) : (dy += 1) {
+                draw_loop: while (dy <= thk) : (dy += 1) {
                     const ty = @as(i32, @intFromFloat(turt.y)) - @as(i32, @intCast(dy));
                     var dx = -thk;
                     while (dx <= thk) : (dx += 1) {
                         const tx = @as(i32, @intFromFloat(turt.x)) - @as(i32, @intCast(dx));
-                        g_gamectx.floor.img[g_gamectx.floor.pos2idx(tx, ty)] = turt.color;
+                        const indx = g_gamectx.floor.pos2idx(tx, ty);
+                        const prev_color: color_t = g_gamectx.floor.img[indx];
+                        if (prev_color != turt.color) {
+                            g_gamectx.floor.img[indx] = turt.color;
 
-                        //TODO add update if pixel changed
-                        //TODO don't do if pixel already updated this tick?
+                            if (numupdate >= maxupdate) {
+                                std.debug.print("Too many updates!\n", .{});
+                                break :draw_loop;
+                            }
 
+                            // add to update
+                            //TODO don't do if pixel already updated this tick?
+                            updateitems[numupdate] = .{
+                                .x = @intCast(tx),
+                                .y = @intCast(ty),
+                                .color = @as(u8, turt.color),
+                            };
+                            numupdate += 1;
+                        }
                     }
                 }
             }
@@ -602,7 +627,16 @@ fn evaluator() void {
         }
 
         // sent out updates
-        //TODO
+        for (g_gamectx.users) |*user| {
+            user.mux.lock();
+            defer user.mux.unlock();
+
+            if (user.wsh) |handle| {
+                WebsocketHandler.write(handle, updatebuf, false) catch |err| {
+                    std.debug.print("Unable to write out updates: {any} {?}\n", .{ err, handle });
+                };
+            }
+        }
 
         // tick
         std.time.sleep(tick_time_ns);
