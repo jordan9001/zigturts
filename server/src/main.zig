@@ -43,6 +43,23 @@ const Turtle = struct {
     loop_pos: [MAXLOOP]u16 = .{0} ** MAXLOOP,
     loop_count: [MAXLOOP]u8 = .{0} ** MAXLOOP,
     loop_head: u16 = 0,
+
+    fn reset(self: *Turtle, full: bool) void {
+        // lock must already be owned by this thread
+        self.cursor = 0;
+        self.spd = 0.0;
+        self.rotspd = 0.0;
+        self.rot = 0.0;
+        self.thick = 1;
+        self.wait = 0;
+        self.loop_head = 0;
+
+        if (full) {
+            self.x = 0.0;
+            self.y = 0.0;
+            self.color = 0xf;
+        }
+    }
 };
 
 /// A User has a unique id, a turtle, and a websocket context
@@ -57,6 +74,7 @@ const UserContext = struct {
     /// this is not the same as the turtle's mux
     mux: std.Thread.Mutex = .{},
     wsh: ?WebSockets.WsHandle,
+    ignore_close: bool = false,
     wss: WebsocketHandler.WebSocketSettings,
 };
 
@@ -164,8 +182,9 @@ fn ws_on_open(userctx: ?*UserContext, handle: WebSockets.WsHandle) void {
         if (user.wsh) |oldhandle| {
             WebsocketHandler.close(oldhandle);
             // will this call on_close? I don't want that
-            // hmmm, try and see I guess?
-            std.debug.print("Got a new connection with an existing connection already here... closed old one, see if new one sticks around?\n    old {?} new {?}", .{ oldhandle, handle });
+            // ignore the close
+            user.ignore_close = true;
+            // std.debug.print("Got a new connection with an existing connection already here... closed old one, see if new one sticks around?\n    old {?} new {?}", .{ oldhandle, handle });
         }
 
         user.wsh = handle;
@@ -183,6 +202,12 @@ fn ws_on_close(userctx: ?*UserContext, uuid: isize) void {
     {
         user.mux.lock();
         defer user.mux.unlock();
+
+        if (user.ignore_close) {
+            // race here probably
+            user.ignore_close = false;
+            return;
+        }
 
         if (user.wsh) |oldhandle| {
             std.debug.print("Closing wshandle for user {}: {?}\n", .{ user.id, oldhandle });
@@ -298,10 +323,7 @@ fn ws_on_msg(
 
                 user.turtle.progsz = @intCast(msg.len - 1);
                 @memcpy(user.turtle.prog[0..(msg.len - 1)], msg[1..]);
-                user.turtle.cursor = 0;
-                user.turtle.rot = 0.0;
-                user.turtle.wait = 0;
-                // don't reset position
+                user.turtle.reset(false);
             }
         },
         .pushfloor, .pushupd => return,
@@ -364,11 +386,12 @@ fn on_upgrade(r: zap.Request, target_protocol: []const u8) void {
 
 const idle_sleep_time = 18e8; // 1.5 sec
 const no_prog_sleep_time = 12e8; // 1.5 sec
-const tick_time_ns = 2e8; // tick every .2 seconds
+const tick_time_ns = 1e8; // tick every .2 seconds
 const tick_time_sec: f32 = tick_time_ns / 1e9;
 
-const speed_mult: f32 = 1;
-const speed_max: f32 = 69;
+const speed_mult: f32 = 0.2;
+const speed_step: f32 = 0.2;
+const speed_max: f32 = speed_mult * 26;
 const turn_step: f32 = std.math.degreesToRadians(90.0 / 24.0);
 const turn_step_rate: f32 = turn_step * tick_time_sec;
 const set_ang_step: f32 = std.math.degreesToRadians(360.0 / 24.0);
@@ -382,21 +405,22 @@ const PixelUpdate = extern struct {
 const TurtOp = enum(u8) {
     set_fwd = 0,
     add_fwd = 1,
-    set_turn_r = 2,
-    set_turn_l = 3,
-    add_turn_r = 4,
-    add_turn_l = 5,
-    now_turn_r = 6,
-    now_turn_l = 7,
-    set_ang = 8,
-    set_color = 9,
-    next_color = 10,
-    read_color = 11,
-    set_thick = 12,
-    start_loop = 13,
-    do_loop = 14,
-    wait_x1 = 15,
-    wait_x26 = 16,
+    sub_fwd = 2,
+    set_turn_r = 3,
+    set_turn_l = 4,
+    add_turn_r = 5,
+    add_turn_l = 6,
+    now_turn_r = 7,
+    now_turn_l = 8,
+    set_ang = 9,
+    set_color = 10,
+    next_color = 11,
+    read_color = 12,
+    set_thick = 13,
+    start_loop = 14,
+    do_loop = 15,
+    wait_x1 = 16,
+    wait_x26 = 17,
     _, // TODO fill up all 26
 };
 
@@ -483,16 +507,21 @@ fn evaluator(stopptr: *bool) void {
                     const imm = (turt.prog[turt.cursor + 1] - 'a');
 
                     turt.cursor += 2;
-                    std.debug.print("eval -- {} {}\n", .{ op, imm });
 
                     switch (op) {
                         .set_fwd => {
                             turt.spd = speed_mult * @as(f32, @floatFromInt(imm));
                         },
                         .add_fwd => {
-                            turt.spd += @as(f32, @floatFromInt(imm));
+                            turt.spd += speed_step * @as(f32, @floatFromInt(imm));
                             if (turt.spd > speed_max) {
                                 turt.spd = speed_max;
+                            }
+                        },
+                        .sub_fwd => {
+                            turt.spd -= speed_step * @as(f32, @floatFromInt(imm));
+                            if (turt.spd <= -0.0) {
+                                turt.spd = 0.0;
                             }
                         },
                         .set_turn_r => {
@@ -573,7 +602,7 @@ fn evaluator(stopptr: *bool) void {
                         },
                         _ => {
                             // unused (for now)
-                            // force a wait
+                            // force a wait I guess
                             turt.wait = imm;
                             break :inst_loop;
                         },
@@ -582,6 +611,7 @@ fn evaluator(stopptr: *bool) void {
             }
 
             // draw first
+            //TODO draw line between the points, not just dots
             {
                 g_gamectx.floor.mux.lock();
                 defer g_gamectx.floor.mux.unlock();
@@ -648,14 +678,16 @@ fn evaluator(stopptr: *bool) void {
         }
 
         // sent out updates
-        for (g_gamectx.users) |*user| {
-            user.mux.lock();
-            defer user.mux.unlock();
+        if (numupdate > 0) {
+            for (g_gamectx.users) |*user| {
+                user.mux.lock();
+                defer user.mux.unlock();
 
-            if (user.wsh) |handle| {
-                WebsocketHandler.write(handle, updatebuf[0..(1 + (numupdate * @sizeOf(PixelUpdate)))], false) catch |err| {
-                    std.debug.print("Unable to write out updates: {any} {?}\n", .{ err, handle });
-                };
+                if (user.wsh) |handle| {
+                    WebsocketHandler.write(handle, updatebuf[0..(1 + (numupdate * @sizeOf(PixelUpdate)))], false) catch |err| {
+                        std.debug.print("Unable to write out updates: {any} {?}\n", .{ err, handle });
+                    };
+                }
             }
         }
 
