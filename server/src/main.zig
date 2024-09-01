@@ -11,9 +11,11 @@ const RndGen = std.rand.DefaultPrng;
 
 const MAXPROG: u16 = 0x480;
 const MAXLOOP: u16 = 30;
+const MAXFLOOR = 0x800;
+const MAXUSERS = 0x400;
 
 // type aliases
-const idint = u64;
+const idint = u32;
 const color_t = u4;
 
 var gpa = std.heap.GeneralPurposeAllocator(.{
@@ -64,14 +66,13 @@ const Floor = struct {
     //TODO have a mutext on individual segments or whole floor? evaluator is the only writer
     // evaluator is the only writing thread
     // and chunk updates are the only other reader
-    h: u16,
-    w: u16,
+    h: i32,
+    w: i32,
     img: []color_t,
     mux: std.Thread.Mutex = .{},
 
     fn pos2idx(self: *Floor, x: i32, y: i32) usize {
-        const pos = self.wrappos(x, y);
-        return @intCast(pos[0] + (pos[1] * self.w));
+        return @intCast(x + (y * self.w));
     }
 
     fn wrappos(self: *Floor, ix: i32, iy: i32) [2]i32 {
@@ -105,14 +106,14 @@ const GameContext = struct {
 
     const Self = @This();
 
-    fn init(usernum: u16, w: u16, h: u16) !Self {
+    fn init(usernum: usize, w: i32, h: i32) !Self {
         const users_s = try alloc.alloc(UserContext, usernum);
 
-        if (w % 2 == 1) {
+        if ((w & 1) == 1) {
             @panic("Width must be multiple of two!");
         }
 
-        const img_s = try alloc.alloc(color_t, w * h);
+        const img_s = try alloc.alloc(color_t, @intCast(w * h));
         @memset(img_s, 0xf);
 
         for (users_s) |*user| {
@@ -279,14 +280,14 @@ fn ws_on_msg(
             // got a prog for this user's turtle
             std.debug.print("User {} sent a program of len {}\n", .{ user.id, msg.len });
 
-            if (msg.len > MAXPROG) {
+            if (msg.len >= MAXPROG) {
                 return;
             }
 
             // validate
-            for (msg) |c| {
+            for (msg[1..]) |c| {
                 if (c > 'z' or c < 'a') {
-                    std.debug.print("User {} sent bad characters, ignoring\n", .{user.id});
+                    std.debug.print("User {} sent bad characters '{}', ignoring\n", .{ user.id, c });
                     return;
                 }
             }
@@ -295,8 +296,8 @@ fn ws_on_msg(
                 user.turtle.mux.lock();
                 defer user.turtle.mux.unlock();
 
-                user.turtle.progsz = @intCast(msg.len);
-                @memcpy(user.turtle.prog[0..msg.len], msg);
+                user.turtle.progsz = @intCast(msg.len - 1);
+                @memcpy(user.turtle.prog[0..(msg.len - 1)], msg[1..]);
                 user.turtle.cursor = 0;
                 user.turtle.rot = 0.0;
                 user.turtle.wait = 0;
@@ -367,14 +368,15 @@ const tick_time_ns = 2e8; // tick every .2 seconds
 const tick_time_sec: f32 = tick_time_ns / 1e9;
 
 const speed_mult: f32 = 1;
+const speed_max: f32 = 69;
 const turn_step: f32 = std.math.degreesToRadians(90.0 / 24.0);
 const turn_step_rate: f32 = turn_step * tick_time_sec;
 const set_ang_step: f32 = std.math.degreesToRadians(360.0 / 24.0);
 
-const PixelUpdate = packed struct {
-    x: u16,
-    y: u16,
-    color: u8,
+const PixelUpdate = extern struct {
+    x: u16 align(1),
+    y: u16 align(1),
+    color: u8 align(1),
 };
 
 const TurtOp = enum(u8) {
@@ -402,10 +404,22 @@ const TurtOp = enum(u8) {
 /// - runs instructions
 /// - writes out updates
 /// - pauses if no clients are connected
-fn evaluator() void {
+fn evaluator(stopptr: *bool) void {
+    //DEBUG
+    {
+        std.debug.print("{}\n", .{@sizeOf(PixelUpdate)});
+        std.debug.assert(@sizeOf(PixelUpdate) == 5);
+    }
+
     loop: while (true) {
+        const stop = @atomicLoad(bool, stopptr, std.builtin.AtomicOrder.unordered);
+        if (stop) {
+            break :loop;
+        }
+
         // loop
         var active_users = false;
+        var active_progs = false;
         // go through each user
         // if we have no users active or no programs, then sleep larger chunks
         for (g_gamectx.users) |*user| {
@@ -415,12 +429,23 @@ fn evaluator() void {
 
                 if (user.wsh != null) {
                     active_users = true;
-                    break;
                 }
+            }
+            {
+                user.turtle.mux.lock();
+                defer user.turtle.mux.unlock();
+
+                if (user.turtle.progsz != 0) {
+                    active_progs = true;
+                }
+            }
+
+            if (active_progs) {
+                break;
             }
         }
 
-        if (!active_users) {
+        if (!active_users or !active_progs) {
             std.time.sleep(idle_sleep_time);
             continue :loop;
         }
@@ -433,16 +458,13 @@ fn evaluator() void {
         defer alloc.free(updatebuf);
         updatebuf[0] = @intFromEnum(MsgType.pushupd);
 
-        const updateitems: [*]PixelUpdate = @ptrCast(@alignCast(&updatebuf[1]));
+        const updateitems: [*]align(1) PixelUpdate = @ptrCast(&updatebuf[1]);
 
-        var active_progs = false;
         for (g_gamectx.users) |*user| {
             const turt: *Turtle = &user.turtle;
 
             if (turt.progsz == 0) {
                 continue;
-            } else {
-                active_progs = true;
             }
 
             turt.mux.lock();
@@ -459,10 +481,11 @@ fn evaluator() void {
                         break :inst_loop;
                     }
 
-                    turt.cursor += 2;
-
                     const op: TurtOp = @enumFromInt(turt.prog[turt.cursor] - 'a');
                     const imm = (turt.prog[turt.cursor + 1] - 'a');
+
+                    turt.cursor += 2;
+                    std.debug.print("eval -- {} {}\n", .{ op, imm });
 
                     switch (op) {
                         .set_fwd => {
@@ -470,6 +493,9 @@ fn evaluator() void {
                         },
                         .add_fwd => {
                             turt.spd += @as(f32, @floatFromInt(imm));
+                            if (turt.spd > speed_max) {
+                                turt.spd = speed_max;
+                            }
                         },
                         .set_turn_r => {
                             turt.rotspd = turn_step_rate * @as(f32, @floatFromInt(imm));
@@ -504,8 +530,9 @@ fn evaluator() void {
                             g_gamectx.floor.mux.lock();
                             defer g_gamectx.floor.mux.unlock();
 
+                            const pos = g_gamectx.floor.wrappos(@intFromFloat(turt.x), @intFromFloat(turt.y));
                             const undercolor = g_gamectx.floor.img[
-                                g_gamectx.floor.pos2idx(@intFromFloat(turt.x), @intFromFloat(turt.y))
+                                g_gamectx.floor.pos2idx(pos[0], pos[1])
                             ];
 
                             turt.color = undercolor;
@@ -568,7 +595,8 @@ fn evaluator() void {
                     var dx = -thk;
                     while (dx <= thk) : (dx += 1) {
                         const tx = @as(i32, @intFromFloat(turt.x)) - @as(i32, @intCast(dx));
-                        const indx = g_gamectx.floor.pos2idx(tx, ty);
+                        const pos = g_gamectx.floor.wrappos(tx, ty);
+                        const indx = g_gamectx.floor.pos2idx(pos[0], pos[1]);
                         const prev_color: color_t = g_gamectx.floor.img[indx];
                         if (prev_color != turt.color) {
                             g_gamectx.floor.img[indx] = turt.color;
@@ -581,8 +609,8 @@ fn evaluator() void {
                             // add to update
                             //TODO don't do if pixel already updated this tick?
                             updateitems[numupdate] = .{
-                                .x = @intCast(tx),
-                                .y = @intCast(ty),
+                                .x = @intCast(pos[0]),
+                                .y = @intCast(pos[1]),
                                 .color = @as(u8, turt.color),
                             };
                             numupdate += 1;
@@ -621,18 +649,13 @@ fn evaluator() void {
             turt.y = nxty;
         }
 
-        if (!active_progs) {
-            std.time.sleep(no_prog_sleep_time);
-            continue :loop;
-        }
-
         // sent out updates
         for (g_gamectx.users) |*user| {
             user.mux.lock();
             defer user.mux.unlock();
 
             if (user.wsh) |handle| {
-                WebsocketHandler.write(handle, updatebuf, false) catch |err| {
+                WebsocketHandler.write(handle, updatebuf[0..(1 + (numupdate * @sizeOf(PixelUpdate)))], false) catch |err| {
                     std.debug.print("Unable to write out updates: {any} {?}\n", .{ err, handle });
                 };
             }
@@ -649,9 +672,9 @@ pub fn main() !void {
 
     var do_help = false;
     var prog: []const u8 = "turtserver";
-    var usernum: u16 = 0;
-    var floorw: u16 = 0;
-    var floorh: u16 = 0;
+    var usernum: usize = 0;
+    var floorw: i32 = 0;
+    var floorh: i32 = 0;
 
     var argi = std.process.args();
     var i: u16 = 0;
@@ -661,13 +684,13 @@ pub fn main() !void {
                 prog = a;
             },
             1 => {
-                usernum = std.fmt.parseInt(u16, a, 0) catch 0;
+                usernum = std.fmt.parseInt(usize, a, 0) catch 0;
             },
             2 => {
-                floorw = std.fmt.parseInt(u16, a, 0) catch 0;
+                floorw = std.fmt.parseInt(i32, a, 0) catch 0;
             },
             3 => {
-                floorh = std.fmt.parseInt(u16, a, 0) catch 0;
+                floorh = std.fmt.parseInt(i32, a, 0) catch 0;
             },
             else => {
                 do_help = true;
@@ -676,7 +699,7 @@ pub fn main() !void {
         }
     }
 
-    if (usernum == 0 or floorw == 0 or floorh == 0) {
+    if (usernum <= 0 or usernum > MAXUSERS or floorw <= 0 or floorw > MAXFLOOR or floorh <= 0 or floorh > MAXFLOOR) {
         do_help = true;
     }
 
@@ -706,10 +729,12 @@ pub fn main() !void {
     std.debug.print("Listening on 0.0.0.0:3000\n", .{});
 
     // start our own thread for evaluating the instructions
+    var stopper: bool = false;
+    const stopptr = &stopper;
     const evaluator_thrd = std.Thread.spawn(
         std.Thread.SpawnConfig{},
         evaluator,
-        .{},
+        .{&stopper},
     ) catch unreachable;
 
     // start worker threads
@@ -717,6 +742,9 @@ pub fn main() !void {
         .threads = 1,
         .workers = 1,
     });
+
+    std.debug.print("Shutting down\n", .{});
+    @atomicStore(bool, stopptr, true, std.builtin.AtomicOrder.unordered);
 
     std.Thread.join(evaluator_thrd);
 }
