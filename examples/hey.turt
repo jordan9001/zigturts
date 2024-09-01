@@ -1,0 +1,69 @@
+now_turn_l 6
+set_fwd 6
+set_turn_r 0
+set_thick 0
+next_color 3
+
+wait_26 1
+
+# h
+now_turn_l 24
+wait 12
+now_turn_r 24
+now_turn_r 24
+wait 6
+now_turn_l 24
+wait 6
+now_turn_l 24
+wait 6
+now_turn_r 24
+now_turn_r 24
+wait 12
+
+now_turn_l 24
+wait 9
+
+# e
+now_turn_l 24
+wait 10
+now_turn_r 24
+wait 5
+now_turn_l 24
+now_turn_l 24
+wait 5
+now_turn_l 24
+wait 5
+now_turn_l 24
+wait 5
+now_turn_l 24
+now_turn_l 24
+wait 5
+now_turn_l 24
+wait 5
+now_turn_l 24
+wait 14
+
+# l l
+
+start_loop 0
+now_turn_l 24
+wait 10
+now_turn_l 24
+now_turn_l 24
+wait 10
+now_turn_l 24
+wait 14
+do_loop 0
+
+# o
+set_turn_l 25
+wait_26 1
+wait 6
+set_turn_l 0
+wait 9
+
+
+
+
+
+# back to start

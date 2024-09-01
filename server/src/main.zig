@@ -38,7 +38,7 @@ const Turtle = struct {
     x: f32 = 0.0,
     y: f32 = 0.0,
     color: color_t = 0,
-    thick: u8 = 3,
+    thick: u8 = 1,
     wait: u16 = 0,
     loop_pos: [MAXLOOP]u16 = .{0} ** MAXLOOP,
     loop_count: [MAXLOOP]u8 = .{0} ** MAXLOOP,
@@ -417,8 +417,8 @@ const TurtOp = enum(u8) {
     set_thick = 13,
     start_loop = 14,
     do_loop = 15,
-    wait_x1 = 16,
-    wait_x26 = 17,
+    wait = 16,
+    wait_26 = 17,
     _, // TODO fill up all 26
 };
 
@@ -580,6 +580,7 @@ fn evaluator(stopptr: *bool) void {
 
                             turt.loop_pos[turt.loop_head] = turt.cursor;
                             turt.loop_count[turt.loop_head] = imm + 1;
+                            turt.loop_head += 1;
                         },
                         .do_loop => {
                             if (turt.loop_head <= imm) {
@@ -597,11 +598,11 @@ fn evaluator(stopptr: *bool) void {
                             // force wait a tick if using this inst
                             break :inst_loop;
                         },
-                        .wait_x1 => {
+                        .wait => {
                             turt.wait = imm;
                             break :inst_loop;
                         },
-                        .wait_x26 => {
+                        .wait_26 => {
                             turt.wait = @as(u16, imm) * 26;
                             break :inst_loop;
                         },
