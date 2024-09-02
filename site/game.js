@@ -38,7 +38,7 @@ function getcolor(v) {
     case 14:
       return [0xe8, 0xeb, 0x8b];
     case 15:
-      return [0xd5, 0xc7, 0xd1];
+      return [0xf5, 0xeb, 0xf2];
     default:
       console.log("Uh?");
       return [0xff, 0x00, 0x00];

@@ -8,7 +8,7 @@ set_turn_r 0
 set_thick 0
 next_color 3
 
-wait_26 1
+wait 6
 
 # h
 now_turn_l 24

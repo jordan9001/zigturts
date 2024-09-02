@@ -681,7 +681,7 @@ fn evaluator(stopptr: *bool) void {
                 nxty -= fh;
             }
             while (nxty < 0.0) {
-                nxty += fw;
+                nxty += fh;
             }
             turt.y = nxty;
         }

@@ -1,0 +1,23 @@
+set_thick 2
+set_color 3
+
+start_loop 4
+next_color 1
+add_fwd 3
+
+set_fwd 12
+set_turn_r 12
+
+start_loop 3
+wait 18
+now_turn_l 6
+do_loop 0
+
+set_turn_l 6
+
+start_loop 2
+wait 12
+now_turn_r 12
+do_loop 0
+
+do_loop 0
